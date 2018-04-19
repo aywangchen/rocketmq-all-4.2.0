@@ -27,22 +27,24 @@ import org.apache.rocketmq.remoting.common.RemotingHelper;
 public class TransactionProducer {
     public static void main(String[] args) throws MQClientException, InterruptedException {
         TransactionCheckListener transactionCheckListener = new TransactionCheckListenerImpl();
-        TransactionMQProducer producer = new TransactionMQProducer("please_rename_unique_group_name");
+        TransactionMQProducer producer = new TransactionMQProducer("testProducerGroup");
         producer.setCheckThreadPoolMinSize(2);
         producer.setCheckThreadPoolMaxSize(2);
         producer.setCheckRequestHoldMax(2000);
+        producer.setNamesrvAddr("127.0.0.1:9876");
         producer.setTransactionCheckListener(transactionCheckListener);
+        producer.setDefaultTopicQueueNums(1);
         producer.start();
 
-        String[] tags = new String[] {"TagA", "TagB", "TagC", "TagD", "TagE"};
+        //String[] tags = new String[] {"TagA", "TagB", "TagC", "TagD", "TagE"};
         TransactionExecuterImpl tranExecuter = new TransactionExecuterImpl();
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < 10; i++) {
             try {
                 Message msg =
-                    new Message("TopicTest", tags[i % tags.length], "KEY" + i,
+                    new Message("TopicTest", null, null,
                         ("Hello RocketMQ " + i).getBytes(RemotingHelper.DEFAULT_CHARSET));
                 SendResult sendResult = producer.sendMessageInTransaction(msg, tranExecuter, null);
-                System.out.printf("%s%n", sendResult);
+                //System.out.printf("%s%n", sendResult);
 
                 Thread.sleep(10);
             } catch (MQClientException | UnsupportedEncodingException e) {

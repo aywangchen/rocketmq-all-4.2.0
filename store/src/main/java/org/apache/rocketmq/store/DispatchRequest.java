@@ -30,24 +30,28 @@ public class DispatchRequest {
     private final boolean success;
     private final String uniqKey;
 
+    /**
+     * 事务相关部分
+     */
     private final int sysFlag;
+    private final long tranStateTableOffset;
     private final long preparedTransactionOffset;
     private final Map<String, String> propertiesMap;
     private byte[] bitMap;
 
     public DispatchRequest(
-        final String topic,
-        final int queueId,
-        final long commitLogOffset,
-        final int msgSize,
-        final long tagsCode,
-        final long storeTimestamp,
-        final long consumeQueueOffset,
-        final String keys,
-        final String uniqKey,
-        final int sysFlag,
-        final long preparedTransactionOffset,
-        final Map<String, String> propertiesMap
+            final String topic,
+            final int queueId,
+            final long commitLogOffset,
+            final int msgSize,
+            final long tagsCode,
+            final long storeTimestamp,
+            final long consumeQueueOffset,
+            final String keys,
+            final String uniqKey,
+            final int sysFlag,
+            final long preparedTransactionOffset,
+            final Map<String, String> propertiesMap
     ) {
         this.topic = topic;
         this.queueId = queueId;
@@ -60,6 +64,7 @@ public class DispatchRequest {
         this.uniqKey = uniqKey;
 
         this.sysFlag = sysFlag;
+        this.tranStateTableOffset = 0;
         this.preparedTransactionOffset = preparedTransactionOffset;
         this.success = true;
         this.propertiesMap = propertiesMap;
@@ -76,6 +81,7 @@ public class DispatchRequest {
         this.keys = "";
         this.uniqKey = null;
         this.sysFlag = 0;
+        this.tranStateTableOffset = 0;
         this.preparedTransactionOffset = 0;
         this.success = false;
         this.propertiesMap = null;
@@ -92,9 +98,43 @@ public class DispatchRequest {
         this.keys = "";
         this.uniqKey = null;
         this.sysFlag = 0;
+        this.tranStateTableOffset = 0;
         this.preparedTransactionOffset = 0;
         this.success = success;
         this.propertiesMap = null;
+    }
+
+    public DispatchRequest(final String topic,
+                           final int queueId,
+                           final long commitLogOffset,
+                           final int msgSize,
+                           final long tagsCode,
+                           final long storeTimestamp,
+                           final long consumeQueueOffset,
+                           final String keys,
+                           /**
+                            * 事务部分
+                            */
+                           final int sysFlag,
+                           final long tranStateTableOffset,
+                           final long preparedTransactionOffset,
+                           final Map<String, String> properties
+    ) {
+        this.topic = topic;
+        this.queueId = queueId;
+        this.commitLogOffset = commitLogOffset;
+        this.msgSize = msgSize;
+        this.tagsCode = tagsCode;
+        this.storeTimestamp = storeTimestamp;
+        this.consumeQueueOffset = consumeQueueOffset;
+        this.keys = keys;
+        this.uniqKey = null;
+
+        this.sysFlag = sysFlag;
+        this.tranStateTableOffset = tranStateTableOffset;
+        this.preparedTransactionOffset = preparedTransactionOffset;
+        this.success = true;
+        this.propertiesMap = properties;
     }
 
     public String getTopic() {
@@ -155,5 +195,9 @@ public class DispatchRequest {
 
     public void setBitMap(byte[] bitMap) {
         this.bitMap = bitMap;
+    }
+
+    public long getTranStateTableOffset() {
+        return tranStateTableOffset;
     }
 }

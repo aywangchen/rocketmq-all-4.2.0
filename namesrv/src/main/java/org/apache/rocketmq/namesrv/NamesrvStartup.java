@@ -94,7 +94,7 @@ public class NamesrvStartup {
             JoranConfigurator configurator = new JoranConfigurator();
             configurator.setContext(lc);
             lc.reset();
-            configurator.doConfigure(namesrvConfig.getRocketmqHome() + "/conf/logback_namesrv.xml");
+            configurator.doConfigure(namesrvConfig.getRocketmqHome() + "/distribution/conf/logback_namesrv.xml");
             final Logger log = LoggerFactory.getLogger(LoggerName.NAMESRV_LOGGER_NAME);
 
             MixAll.printObjectProperties(log, namesrvConfig);

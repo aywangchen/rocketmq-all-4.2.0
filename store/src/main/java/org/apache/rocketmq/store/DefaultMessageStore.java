@@ -22,13 +22,8 @@ import java.io.RandomAccessFile;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileLock;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.Map;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
@@ -42,6 +37,7 @@ import org.apache.rocketmq.common.SystemClock;
 import org.apache.rocketmq.common.ThreadFactoryImpl;
 import org.apache.rocketmq.common.UtilAll;
 import org.apache.rocketmq.common.constant.LoggerName;
+import org.apache.rocketmq.common.message.MessageConst;
 import org.apache.rocketmq.common.message.MessageDecoder;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.common.message.MessageExtBatch;
@@ -55,6 +51,8 @@ import org.apache.rocketmq.store.index.IndexService;
 import org.apache.rocketmq.store.index.QueryOffsetResult;
 import org.apache.rocketmq.store.schedule.ScheduleMessageService;
 import org.apache.rocketmq.store.stats.BrokerStatsManager;
+import org.apache.rocketmq.store.transaction.TransactionCheckExecuter;
+import org.apache.rocketmq.store.transaction.TransactionStateService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -89,6 +87,15 @@ public class DefaultMessageStore implements MessageStore {
 
     private final TransientStorePool transientStorePool;
 
+    // 分布式事务服务
+    private final TransactionStateService transactionStateService;
+
+    // 分布式消息索引服务
+    private final DispatchMessageService dispatchMessageService;
+
+    // 事务回查接口
+    private final TransactionCheckExecuter transactionCheckExecuter;
+
     private final RunningFlags runningFlags = new RunningFlags();
     private final SystemClock systemClock = new SystemClock();
 
@@ -113,7 +120,8 @@ public class DefaultMessageStore implements MessageStore {
     boolean shutDownNormal = false;
 
     public DefaultMessageStore(final MessageStoreConfig messageStoreConfig, final BrokerStatsManager brokerStatsManager,
-        final MessageArrivingListener messageArrivingListener, final BrokerConfig brokerConfig) throws IOException {
+                               final MessageArrivingListener messageArrivingListener, final BrokerConfig brokerConfig) throws IOException {
+        this.transactionCheckExecuter = null;
         this.messageArrivingListener = messageArrivingListener;
         this.brokerConfig = brokerConfig;
         this.messageStoreConfig = messageStoreConfig;
@@ -133,6 +141,10 @@ public class DefaultMessageStore implements MessageStore {
 
         this.scheduleMessageService = new ScheduleMessageService(this);
 
+        this.transactionStateService = new TransactionStateService(this);
+
+        this.dispatchMessageService = null;
+
         this.transientStorePool = new TransientStorePool(messageStoreConfig);
 
         if (messageStoreConfig.isTransientStorePoolEnable()) {
@@ -150,6 +162,53 @@ public class DefaultMessageStore implements MessageStore {
         File file = new File(StorePathConfigHelper.getLockFile(messageStoreConfig.getStorePathRootDir()));
         MappedFile.ensureDirOK(file.getParent());
         lockFile = new RandomAccessFile(file, "rw");
+    }
+
+    public DefaultMessageStore(final MessageStoreConfig messageStoreConfig, final BrokerStatsManager brokerStatsManager,
+        final MessageArrivingListener messageArrivingListener, final BrokerConfig brokerConfig,
+        final TransactionCheckExecuter transactionStateService) throws IOException {
+        this.transactionCheckExecuter = transactionStateService;
+        this.messageArrivingListener = messageArrivingListener;
+        this.brokerConfig = brokerConfig;
+        this.messageStoreConfig = messageStoreConfig;
+        this.brokerStatsManager = brokerStatsManager;
+        this.allocateMappedFileService = new AllocateMappedFileService(this);
+        this.commitLog = new CommitLog(this);
+        this.consumeQueueTable = new ConcurrentHashMap<>(32);
+
+        this.flushConsumeQueueService = new FlushConsumeQueueService();
+        this.cleanCommitLogService = new CleanCommitLogService();
+        this.cleanConsumeQueueService = new CleanConsumeQueueService();
+        this.storeStatsService = new StoreStatsService();
+        this.indexService = new IndexService(this);
+        this.haService = new HAService(this);
+
+        this.reputMessageService = new ReputMessageService();
+
+        this.scheduleMessageService = new ScheduleMessageService(this);
+
+        this.transactionStateService = new TransactionStateService(this);
+
+        this.dispatchMessageService = new DispatchMessageService();
+
+        this.transientStorePool = new TransientStorePool(messageStoreConfig);
+
+        if (messageStoreConfig.isTransientStorePoolEnable()) {
+            this.transientStorePool.init();
+        }
+
+        this.allocateMappedFileService.start();
+
+        this.indexService.start();
+
+        this.dispatcherList = new LinkedList<>();
+        this.dispatcherList.addLast(new CommitLogDispatcherBuildConsumeQueue());
+        this.dispatcherList.addLast(new CommitLogDispatcherBuildIndex());
+
+        File file = new File(StorePathConfigHelper.getLockFile(messageStoreConfig.getStorePathRootDir()));
+        MappedFile.ensureDirOK(file.getParent());
+        lockFile = new RandomAccessFile(file, "rw");
+        this.dispatchMessageService.start();
     }
 
     public void truncateDirtyLogicFiles(long phyOffset) {
@@ -232,6 +291,7 @@ public class DefaultMessageStore implements MessageStore {
         }
         this.reputMessageService.start();
 
+        this.transactionStateService.start();
         this.haService.start();
 
         this.createTempFile();
@@ -252,6 +312,8 @@ public class DefaultMessageStore implements MessageStore {
                 log.error("shutdown Exception, ", e);
             }
 
+            this.transactionStateService.shutdown();
+
             if (this.scheduleMessageService != null) {
                 this.scheduleMessageService.shutdown();
             }
@@ -259,6 +321,7 @@ public class DefaultMessageStore implements MessageStore {
             this.haService.shutdown();
 
             this.storeStatsService.shutdown();
+            this.dispatchMessageService.shutdown();
             this.indexService.shutdown();
             this.commitLog.shutdown();
             this.reputMessageService.shutdown();
@@ -412,6 +475,10 @@ public class DefaultMessageStore implements MessageStore {
         }
 
         return result;
+    }
+
+    public void putDispatchRequst(final DispatchRequest dispatchRequest){
+        this.dispatchMessageService.putRequest(dispatchRequest);
     }
 
     @Override
@@ -1295,6 +1362,10 @@ public class DefaultMessageStore implements MessageStore {
         return transientStorePool;
     }
 
+    public TransactionStateService getTransactionStateService() {
+        return transactionStateService;
+    }
+
     private void putConsumeQueue(final String topic, final int queueId, final ConsumeQueue consumeQueue) {
         ConcurrentMap<Integer/* queueId */, ConsumeQueue> map = this.consumeQueueTable.get(topic);
         if (null == map) {
@@ -1334,6 +1405,10 @@ public class DefaultMessageStore implements MessageStore {
 
     public StoreStatsService getStoreStatsService() {
         return storeStatsService;
+    }
+
+    public TransactionCheckExecuter getTransactionCheckExecuter() {
+        return transactionCheckExecuter;
     }
 
     public RunningFlags getAccessRights() {
@@ -1412,6 +1487,7 @@ public class DefaultMessageStore implements MessageStore {
         @Override
         public void dispatch(DispatchRequest request) {
             final int tranType = MessageSysFlag.getTransactionValue(request.getSysFlag());
+            // 分发消息到ConsumeQueue
             switch (tranType) {
                 case MessageSysFlag.TRANSACTION_NOT_TYPE:
                 case MessageSysFlag.TRANSACTION_COMMIT_TYPE:
@@ -1761,6 +1837,7 @@ public class DefaultMessageStore implements MessageStore {
                             if (dispatchRequest.isSuccess()) {
                                 if (size > 0) {
                                     DefaultMessageStore.this.doDispatch(dispatchRequest);
+                                    //DefaultMessageStore.this.putDispatchRequst(dispatchRequest);
 
                                     if (BrokerRole.SLAVE != DefaultMessageStore.this.getMessageStoreConfig().getBrokerRole()
                                         && DefaultMessageStore.this.brokerConfig.isLongPollingEnable()) {
@@ -1829,5 +1906,128 @@ public class DefaultMessageStore implements MessageStore {
             return ReputMessageService.class.getSimpleName();
         }
 
+    }
+
+    /**
+     * 分发消息索引服务
+     */
+    class DispatchMessageService extends ServiceThread{
+        private volatile List<DispatchRequest> requestsWrite;
+        private volatile List<DispatchRequest> requestsRead;
+
+        public DispatchMessageService(){
+            int putMsgIndexHigtWater = 20;
+            putMsgIndexHigtWater *= 1.5;
+            this.requestsRead = new ArrayList<DispatchRequest>(putMsgIndexHigtWater);
+            this.requestsWrite = new ArrayList<DispatchRequest>(putMsgIndexHigtWater);
+        }
+
+        public void putRequest(final DispatchRequest dispatchRequest){
+            int requestWriteSize = 0;
+            int putMsgIndexHigtWater = 20;
+            synchronized (this) {
+                this.requestsWrite.add(dispatchRequest);
+                requestWriteSize = this.requestsWrite.size();
+                if (!this.hasNotified.get()) {
+                    this.hasNotified.set(true);
+                    this.notify();
+                }
+            }
+           // requestsRead.add(dispatchRequest);
+            DefaultMessageStore.this.getStoreStatsService().setDispatchMaxBuffer(requestWriteSize);
+
+            if (requestWriteSize > putMsgIndexHigtWater) {
+                try {
+                    if (log.isDebugEnabled()) {
+                        log.debug("Message index buffer size" + requestWriteSize + " > high water "
+                            + putMsgIndexHigtWater);
+                    }
+                    Thread.sleep(1);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        private void swapRequests(){
+            List<DispatchRequest> tmp = this.requestsWrite;
+            this.requestsWrite = this.requestsRead;
+            this.requestsRead = tmp;
+        }
+
+        private void doDispatch(){
+            if (!this.requestsRead.isEmpty()) {
+                for (DispatchRequest req : this.requestsRead) {
+                    final int tranType = MessageSysFlag.getTransactionValue(req.getSysFlag());
+
+                   // DefaultMessageStore.this.doDispatch(req);
+
+                    // 写【事务消息】状态存储
+                    switch (tranType) {
+                        case MessageSysFlag.TRANSACTION_NOT_TYPE:
+                            break;
+                        case MessageSysFlag.TRANSACTION_PREPARED_TYPE:
+                            // 新增【事务消息】状态存储
+                            DefaultMessageStore.this.getTransactionStateService().appendPreparedTransaction(req);
+                            System.out.println("新增【事务消息】状态存储");
+                            break;
+                        case MessageSysFlag.TRANSACTION_COMMIT_TYPE:
+                        case MessageSysFlag.TRANSACTION_ROLLBACK_TYPE:
+                            // 更新【事务消息】状态存储 COMMIT/ROLLBACK
+                            DefaultMessageStore.this.getTransactionStateService().updateTransactionstate(
+                                    req.getTranStateTableOffset(),
+                                    req.getPreparedTransactionOffset(),
+                                    req.getPropertiesMap().get(MessageConst.PROPERTY_PRODUCER_GROUP),
+                                    tranType
+                            );
+                            System.out.println("更新【事务消息】状态存储 COMMIT/ROLLBACK");
+                            break;
+                    }
+                }
+
+                this.requestsRead.clear();
+            }
+
+
+        }
+
+        @Override
+        public String getServiceName() {
+            return DispatchMessageService.class.getSimpleName();
+        }
+
+        @Override
+        protected void onWaitEnd(){
+            this.swapRequests();
+        }
+
+        @Override
+        public void run() {
+            DefaultMessageStore.log.info(this.getServiceName() + " service started");
+
+            while (!this.isStopped()) {
+                try {
+                    this.waitForRunning(0);
+                    this.doDispatch();
+                } catch (Exception e) {
+                    DefaultMessageStore.log.warn(this.getServiceName() + " service has exception. ", e);
+                }
+            }
+
+            // 在正常shutdown情况下，要保证所有消息都dispatch
+            try {
+                Thread.sleep(5 * 1000);
+            } catch (InterruptedException e) {
+                DefaultMessageStore.log.warn(this.getServiceName() + " service has exception. ", e);
+            }
+
+            synchronized (this) {
+                this.swapRequests();
+            }
+
+            this.doDispatch();
+
+            DefaultMessageStore.log.info(this.getServiceName() + " service end");
+        }
     }
 }

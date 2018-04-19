@@ -58,6 +58,27 @@ public class ProducerManager {
         return newGroupChannelTable;
     }
 
+    /**
+     * 随机返回一个生产者channel
+     * @param groupName
+     * @return
+     */
+    public ClientChannelInfo pickProducerChannelRandomly(final String groupName){
+        try {
+            HashMap<Channel, ClientChannelInfo> clientChannelTable = this.groupChannelTable.get(groupName);
+            if (clientChannelTable == null) {
+                return null;
+            }
+
+            for (Entry<Channel, ClientChannelInfo> entry : clientChannelTable.entrySet()) {
+                return entry.getValue();
+            }
+        } catch (Exception e) {
+            log.warn("Producer pickProducerChannelRandomly error");
+        }
+        return null;
+    }
+
     public void scanNotActiveChannel() {
         try {
             if (this.groupChannelLock.tryLock(LOCK_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {

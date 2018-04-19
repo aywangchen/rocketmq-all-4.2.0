@@ -427,9 +427,11 @@ public class CommitLog {
                     if (this.defaultMessageStore.getMessageStoreConfig().isDuplicationEnable()) {
                         if (dispatchRequest.getCommitLogOffset() < this.defaultMessageStore.getConfirmOffset()) {
                             this.defaultMessageStore.doDispatch(dispatchRequest);
+                            //this.defaultMessageStore.putDispatchRequst(dispatchRequest);
                         }
                     } else {
                         this.defaultMessageStore.doDispatch(dispatchRequest);
+                        //this.defaultMessageStore.putDispatchRequst(dispatchRequest);
                     }
                 }
                 // Intermediate file read error
@@ -531,6 +533,7 @@ public class CommitLog {
 
         String topic = msg.getTopic();
         int queueId = msg.getQueueId();
+        long tagsCode = msg.getTagsCode();
 
         final int tranType = MessageSysFlag.getTransactionValue(msg.getSysFlag());
         if (tranType == MessageSysFlag.TRANSACTION_NOT_TYPE
@@ -603,6 +606,24 @@ public class CommitLog {
                     beginTimeInLock = 0;
                     return new PutMessageResult(PutMessageStatus.UNKNOWN_ERROR, result);
             }
+
+            DispatchRequest dispatchRequest = new DispatchRequest(topic,
+                    queueId,
+                    result.getWroteOffset(),
+                    result.getWroteBytes(),
+                    tagsCode,
+                    msg.getStoreTimestamp(),
+                    result.getLogicsOffset(),
+                    msg.getKeys(),
+                    /**
+                     * 事务部分
+                     */
+                    msg.getSysFlag(),
+                    msg.getQueueOffset(),
+                    msg.getPreparedTransactionOffset(),
+                    msg.getProperties()
+                    );
+            this.defaultMessageStore.putDispatchRequst(dispatchRequest);
 
             eclipseTimeInLock = this.defaultMessageStore.getSystemClock().now() - beginLockTimestamp;
             beginTimeInLock = 0;

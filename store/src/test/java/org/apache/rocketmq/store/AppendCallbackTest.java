@@ -54,7 +54,7 @@ public class AppendCallbackTest {
         messageStoreConfig.setStorePathRootDir(System.getProperty("user.home") + File.separator + "unitteststore");
         messageStoreConfig.setStorePathCommitLog(System.getProperty("user.home") + File.separator + "unitteststore" + File.separator + "commitlog");
         //too much reference
-        DefaultMessageStore messageStore = new DefaultMessageStore(messageStoreConfig, null, null, null);
+        DefaultMessageStore messageStore = new DefaultMessageStore(messageStoreConfig, null, null, null,null);
         CommitLog commitLog = new CommitLog(messageStore);
         callback = commitLog.new DefaultAppendMessageCallback(1024);
     }
